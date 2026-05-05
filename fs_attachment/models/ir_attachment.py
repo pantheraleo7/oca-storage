@@ -864,8 +864,10 @@ class IrAttachment(models.Model):
                     with new_env.cr.savepoint():
                         # check that no other transaction has
                         # locked the row, don't send a file to storage
-                        # in that case
-                        self.env.cr.execute(
+                        # in that case.
+                        # Must use new_env.cr (not self.env.cr) to avoid
+                        # blocking new_env.cr's own UPDATE on the same row.
+                        new_env.cr.execute(
                             "SELECT id "
                             "FROM ir_attachment "
                             "WHERE id = %s "
