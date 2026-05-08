@@ -1,9 +1,15 @@
 # Copyright 2025 ACSONE SA/NV
 # Copyright 2025 XCG SAS
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
+import logging
 from urllib.parse import urlparse
 
+import boto3
+from botocore.config import Config
+
 from odoo import models
+
+_logger = logging.getLogger(__name__)
 
 
 class IrAttachment(models.Model):
@@ -55,22 +61,37 @@ class IrAttachment(models.Model):
         - `<path>` is the path to the file in the S3 bucket, including the
           bucket name
         """
-        fs, storage_code, file_path = self._get_fs_parts()
+        fs, storage_code, filename = self._get_fs_parts()
         storage = self.env["fs.storage"].sudo().get_by_code(storage_code)
         root_fs = storage._get_root_filesystem(fs)
+        directory_path = storage.get_directory_path().strip("/").rstrip("/")
+
         s3_client = root_fs.s3
-        bucket_name = storage.get_directory_path().strip("/").rstrip("/")
+        endpoint_url_virtual_host_style = s3_client.meta.endpoint_url.rstrip('/')
+        parsed_endpoint_url_vhs = urlparse(endpoint_url_virtual_host_style)
+        netloc_parts = parsed_endpoint_url_vhs.netloc.split('.')
+
+        endpoint_url_path_style = f'{parsed_endpoint_url_vhs.scheme}://{'.'.join(netloc_parts[1:])}'
+        bucket_name = netloc_parts[0]
+        region = netloc_parts[2]
+
         if storage.s3_uses_signed_url_for_x_sendfile:
-            file_url = storage._s3_call_generate_presigned_url(
-                s3_client,
+            temp_client = boto3.client(
+                "s3",
+                endpoint_url=endpoint_url_path_style,
+                region_name=region,
+                aws_access_key_id=root_fs.key,
+                aws_secret_access_key=root_fs.secret,
+                config=Config(s3={"addressing_style": "virtual"}, signature_version="s3v4"),
+            )
+            file_url = temp_client.generate_presigned_url(
                 "get_object",
-                Params={"Bucket": bucket_name, "Key": file_path},
+                Params={"Bucket": bucket_name, "Key": f'{directory_path}/{filename}'},
                 ExpiresIn=storage.s3_signed_url_expiration,
             )
         else:
             file_url = (
-                f"{s3_client.meta.endpoint_url.rstrip('/')}/"
-                f"{bucket_name}/{file_path.lstrip('/')}"
+                f"{endpoint_url_virtual_host_style}/{directory_path}/{filename.lstrip('/')}"
             )
 
         parsed_url = urlparse(file_url)
